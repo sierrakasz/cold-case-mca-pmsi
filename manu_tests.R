@@ -1,0 +1,1172 @@
+rm(list=ls())
+getwd()
+setwd("C:/Users/sierr/Documents/Forensic_Pig/")
+
+#packages
+library(car)
+library(exactRankTests)
+library(nlme)
+library(GGally)
+library(ggforce)
+library(ggplot2)
+library(ggpubr)
+library(ggRandomForests)
+library(ggthemes)
+library(lme4)
+library(phyloseq)
+library(plyr)
+library(PMCMR)
+library(randomForest)
+library(rsample)
+library(tidyverse)
+library(vegan)
+set.seed(1234)
+
+otu <- read.csv("otutable_fp_otuid.csv")
+tax <- read.csv("taxtable_fp_otuid.csv")
+tree <- read_tree('tree.nwk')
+
+metadata=(read.csv("ForensicShowPigMetadata.csv",header=TRUE))
+sampdat=sample_data(metadata)
+sample_names(sampdat)=metadata$SampleID
+sampdat$Day <- factor(sampdat$Day, levels = c('1', '5', '9', '13', '17', '22'))
+
+metadata_complete <- metadata[complete.cases(metadata),]
+metadata_complete %>% group_by(Day) %>% summarise_at(c('Temp', 'ADH'), funs(mean, sd))
+
+
+rownames(otu) <- otu$OTUID
+otu <- otu[,-1]
+OTU=otu_table(otu, taxa_are_rows=TRUE)
+physeq_otu.tree=phyloseq(OTU,tree, sampdat)
+
+rownames(tax) <- tax$OTUID
+tax_reduc <- merge(tax, otu, by = "row.names")
+rownames(tax_reduc) <- tax_reduc$Row.names
+tax_reduc <- tax_reduc[,-1]
+tax_reduc <- tax_reduc[,-1]
+
+tax_f <- tax_reduc[,1:7]
+tax_f <- as.matrix(tax_f)
+TAX=tax_table(tax_f)
+taxa_names(TAX)=row.names(OTU)
+
+physeq_otu.tax=phyloseq(OTU,TAX, sampdat)
+
+#rarefy
+#set seed, so consistent among physeq objects
+physeq_beta <- rarefy_even_depth(physeq_otu.tree, sample.size = 5000)
+physeq <- rarefy_even_depth(physeq_otu.tax, sample.size = 5000)
+
+
+# Pig replicates ----------------------------------------------------------
+
+
+
+# Random Forest -----------------------------------------------------------
+
+#functions
+random_foresting_pig <- function(data_phy) {
+  fd = data_phy
+  predictors=t(otu_table(fd))
+  dim(predictors)
+  resp <- as.factor(sample_data(fd)$Pig)
+  rf.data <- data.frame(resp, predictors)
+  Forest <- randomForest(resp~., data=rf.data, ntree=1000)
+  return(Forest)
+}
+
+m1 <- random_foresting_pig(physeq)
+plot(m1)
+
+# Alpha Div. --------------------------------------------------------------
+
+erich <- estimate_richness(physeq, measures = c("Observed", 'Chao1', "Shannon", "InvSimpson"))
+erich <- add_rownames(erich, "SampleID")
+
+erich <- erich %>%
+  gather(Index, Observation, c("Observed", 'Chao1', "Shannon", "InvSimpson"), na.rm = TRUE)
+erich %>% group_by(Index) %>% summarise_all(funs(mean, sd))
+
+rich = merge(erich, metadata)
+
+
+prepare_samples_kw <- function(rich) {
+  return(list(rich_obs <- rich %>% filter(Index == 'Observed'),
+              rich_cha <- rich %>% filter(Index == 'Chao1'),
+              rich_sha <- rich %>% filter(Index == 'Shannon'),
+              rich_inv <- rich %>% filter(Index == 'InvSimpson')))
+}
+
+kw_values <- prepare_samples_kw(rich)
+
+for(i in 1:length(kw_values)) {
+  print(kruskal.test(Observation ~ Pig, data = kw_values[[i]]))
+  out <- posthoc.kruskal.nemenyi.test(x=kw_values[[i]]$Observation, g=kw_values[[i]]$Pig, dist='Tukey', p.adjust.method = 'bonf' )
+  print(out$p.value)
+}
+
+
+# Beta Div. ---------------------------------------------------------------
+
+  GPdist=phyloseq::distance(physeq_beta, "unifrac")
+  sampledf <- data.frame(sample_data(physeq_beta))
+  a <- adonis(GPdist ~ Pig, data = sampledf)
+  beta_dist <- a$coef.sites
+  beta <- betadisper(GPdist, sampledf$Pig)
+  permutest(beta)
+
+
+# Sample locations --------------------------------------------------------
+
+
+# Random Forest -----------------------------------------------------------
+otu <- as.data.frame(t(otu_table(physeq)))
+otu$SampleID <- rownames(otu)
+meta_sa <- metadata %>% select(SampleID, Location)
+otu <- merge(meta_sa, otu, by = 'SampleID')
+otu <- otu[,-1]
+names(otu) <- make.names(names(otu))
+
+m1 <- randomForest(
+  formula = Location ~ .,
+  data    = otu,
+  ntree= 1000, 
+  mtry = 5
+)
+
+m1
+plot(m1)
+
+
+# Alpha Div. --------------------------------------------------------------
+rich$Pig <- factor(rich$Pig, levels = c('1','2','3','4','5'))
+kw_values[[1]] %>% group_by(Pig) %>% summarise_all(funs(mean, sd))
+
+for(i in 1:length(kw_values)) {
+  kw_values[[i]] %>% group_by(Pig) %>% summarise_all(funs(mean, sd))
+}
+
+for(i in 1:length(kw_values)) {
+  print(kruskal.test(Observation ~ Location, data = kw_values[[i]]))
+  out <- posthoc.kruskal.nemenyi.test(x=kw_values[[i]]$Observation, g=kw_values[[i]]$Pig, dist='Tukey', p.adjust.method = 'bonf' )
+  print(out$p.value)
+}
+
+theme_set(theme_bw(base_size = 18))
+
+p <- ggplot(rich, aes(x=Swab_Areas, y=Observation, fill=Swab_Areas)) +
+  geom_boxplot() + xlab('Sampling Location') + ylab('Alpha-diversity Metrics') + 
+  facet_wrap(~Index, scales="free") + labs(fill = "Sampling Location") +
+  theme(legend.position = 'left') +
+  scale_x_discrete(labels=c('mouth' = 'M', 'ventral_cloth' = 'VC',
+                            'ventral_skin' = 'VS', 'dorsal_cloth' = 'DC',
+                            'dorsal_skin' = 'DS'))
+p
+
+# Beta Div. ---------------------------------------------------------------
+
+ord = ordinate(physeq_beta, method="PCoA", distance="unifrac")
+ordplot=plot_ordination(physeq_beta, ord, color="Swab_Areas")
+ordplot
+
+p2 <- ordplot +
+  geom_point(size = 4) + stat_ellipse(alpha = 0.03, geom = "polygon", aes(fill = Swab_Areas)) +
+ theme(legend.position = 'none')
+p2
+
+theme_set(theme_classic(base_size = 18))
+tiff("SFigLoc.TIF", width = 5000, height = 3000, res=300)
+ggarrange(p,p2, 
+          labels = c("A", "B"),
+          nrow = 2, ncol = 2)
+dev.off()
+
+beta_diversity_calc_loc <- function(physeq) {
+  GPdist=phyloseq::distance(physeq, "unifrac")
+  sampledf <- data.frame(sample_data(physeq))
+  print(return(adonis(GPdist ~ Location, data = sampledf)))
+}
+
+beta_dispersion_calc_loc <- function(physeq) {
+  GPdist=phyloseq::distance(physeq, "unifrac")
+  sampledf <- data.frame(sample_data(physeq))
+  beta <- betadisper(GPdist, sampledf$Location)
+  print(return(permutest(beta)))
+}
+
+beta_diversity_calc_loc(physeq_beta)
+beta_dispersion_calc_loc(physeq_beta)
+
+location_pairwise <- function(physeq) {
+  physeq_L1 <- subset_samples(physeq, Location == 'L1')
+  physeq_L2 <- subset_samples(physeq, Location == 'L2')
+  physeq_L3 <- subset_samples(physeq, Location == 'L3')
+  physeq_L4 <- subset_samples(physeq, Location == 'L4')
+  physeq_L5 <- subset_samples(physeq, Location == 'L5')
+  return(list(physeq_L12 <- merge_phyloseq(physeq_L1, physeq_L2),
+              physeq_L13 <- merge_phyloseq(physeq_L1, physeq_L3),
+              physeq_L14 <- merge_phyloseq(physeq_L1, physeq_L4),
+              physeq_L15 <- merge_phyloseq(physeq_L1, physeq_L5),
+              physeq_L23 <- merge_phyloseq(physeq_L3, physeq_L2),
+              physeq_L24 <- merge_phyloseq(physeq_L4, physeq_L2),
+              physeq_L25 <- merge_phyloseq(physeq_L5, physeq_L2),
+              physeq_L34 <- merge_phyloseq(physeq_L4, physeq_L3),
+              physeq_L35 <- merge_phyloseq(physeq_L3, physeq_L5),
+              physeq_L45 <- merge_phyloseq(physeq_L4, physeq_L5)))
+}
+
+location_list <- location_pairwise(physeq_beta)
+
+for(i in 1:length(location_list)) {
+  print(beta_diversity_calc_loc(location_list[[i]]))
+}
+
+
+# Day ---------------------------------------------------------------------
+
+
+# Random Forest -----------------------------------------------------------
+otu <- as.data.frame(t(otu_table(physeq)))
+otu$SampleID <- rownames(otu)
+meta_sa <- metadata %>% select(SampleID, Day, Location)
+otu <- merge(meta_sa, otu, by = 'SampleID')
+otu <- otu[,-1]
+names(otu) <- make.names(names(otu))
+
+m1 <- randomForest(
+  formula = Day ~ .,
+  data    = otu,
+  ntree= 500
+)
+
+m1
+pred <- m1$predicted
+pred <- as.data.frame(pred)
+colnames(pred) <- 'Predicted'
+
+#using the mean square error to determin the true value
+pred[pred$Predicted < 24.858, "True"] <- '22'
+pred[pred$Predicted < 19.858, "True"] <- '17'
+pred[pred$Predicted < 15.858, "True"] <- '13'
+pred[pred$Predicted < 11.858, "True"] <- '9'
+pred[pred$Predicted < 7.858, "True"] <- '5'
+pred[pred$Predicted < 3.858, "True"] <- '1'
+
+pred$True <- as.numeric(pred$True)
+
+ggplotRegression <- function(fit){
+  
+  ggplot(fit$model, aes_string(x = names(fit$model)[2], y = names(fit$model)[1])) + 
+    geom_abline(slope =0, intercept = 0, color='black') +
+    geom_vline(xintercept = 0, color='black') +
+    stat_smooth(method = "lm", col = "red") 
+}
+
+d <- ggplotRegression(lm(Predicted ~ True, data = pred)) +
+  geom_pointrange(aes(ymin = Predicted-2.858, ymax = Predicted+2.858), 
+                  position=position_jitter(width=0.5), alpha = 0.5) 
+
+lm_eqn <- function(df){
+  m <- lm(Predicted ~ True, df);
+  eq <- substitute(italic(Predicted) == a + b %.% italic(True)*","~~italic(r)^2~"="~r2, 
+                   list(a = format(unname(coef(m)[1]), digits = 2),
+                        b = format(unname(coef(m)[2]), digits = 2),
+                        r2 = format(summary(m)$r.squared, digits = 3)))
+  as.character(as.expression(eq));
+}
+
+d1 <- d + geom_text(x = 5, y = 23, label = lm_eqn(pred), parse = TRUE)
+d1
+
+theme_set(theme_classic(base_size = 18))
+tiff("SFig2.TIF", width = 3000, height = 3000, res=300)
+d1
+dev.off()
+
+
+which.min(m1$mse)
+sqrt(m1$mse[which.min(m1$mse)])
+
+valid_split <- initial_split(otu, .8)
+otu_train <- analysis(valid_split)
+otu_valid <- assessment(valid_split)
+x_test <- otu_valid[setdiff(names(otu_valid), "Day")]
+y_test <- otu_valid$Day
+
+rf_oob_comp <- randomForest(
+  formula = Day~ .,
+  data    = otu_train,
+  xtest   = x_test,
+  ytest   = y_test,
+  ntree = 500
+)
+
+m1
+rf_oob_comp
+
+oob <- sqrt(m1$mse)
+validation <- sqrt(rf_oob_comp$mse)
+
+# compare error rates
+tibble::tibble(
+  `Out of Bag Error` = oob,
+  `Test error` = validation,
+  ntrees = 1:rf_oob_comp$ntree
+) %>%
+  gather(Metric, Error, -ntrees) %>%
+  ggplot(aes(ntrees, Error, color = Metric)) +
+  geom_line() +
+  xlab("Number of trees")
+
+rf_oob_comp
+plot(rf_oob_comp)
+which.min(rf_oob_comp$mse)
+sqrt(m1$mse[which.min(rf_oob_comp$mse)])
+
+#L1,2,3
+otu_l1 <- otu %>%  filter(Location == 'L1')
+otu_l2 <- otu %>%  filter(Location == 'L2')
+otu_l3 <- otu %>%  filter(Location == 'L3')
+
+otu_l1.2.3 <- rbind(otu_l1, otu_l2, otu_l3)
+
+m1 <- randomForest(
+  formula = Day ~ .,
+  data    = otu_l1.2.3,
+  ntree= 500
+)
+
+m1
+plot(m1)
+which.min(m1$mse)
+sqrt(m1$mse[which.min(m1$mse)])
+
+valid_split <- initial_split(otu_l1.2.3, .8)
+otu_train <- analysis(valid_split)
+otu_valid <- assessment(valid_split)
+x_test <- otu_valid[setdiff(names(otu_valid), "Day")]
+y_test <- otu_valid$Day
+
+rf_oob_comp <- randomForest(
+  formula = Day~ .,
+  data    = otu_train,
+  xtest   = x_test,
+  ytest   = y_test,
+  ntree =500
+)
+
+oob <- sqrt(m1$mse)
+validation <- sqrt(rf_oob_comp$mse)
+
+# compare error rates
+tibble::tibble(
+  `Out of Bag Error` = oob,
+  `Test error` = validation,
+  ntrees = 1:rf_oob_comp$ntree
+) %>%
+  gather(Metric, Error, -ntrees) %>%
+  ggplot(aes(ntrees, Error, color = Metric)) +
+  geom_line() +
+  xlab("Number of trees")
+
+rf_oob_comp
+plot(rf_oob_comp)
+which.min(rf_oob_comp$mse)
+sqrt(m1$mse[which.min(rf_oob_comp$mse)])
+
+#L4,5
+otu_l4 <- otu %>%  filter(Location == 'L4')
+otu_l5 <- otu %>%  filter(Location == 'L5')
+
+otu_l4.5 <- rbind(otu_l4, otu_l5)
+
+m1 <- randomForest(
+  formula = Day ~ .,
+  data    = otu_l4.5,
+  ntree= 500
+)
+
+m1
+plot(m1)
+which.min(m1$mse)
+sqrt(m1$mse[which.min(m1$mse)])
+
+valid_split <- initial_split(otu_l4.5, .8)
+otu_train <- analysis(valid_split)
+otu_valid <- assessment(valid_split)
+x_test <- otu_valid[setdiff(names(otu_valid), "Day")]
+y_test <- otu_valid$Day
+
+rf_oob_comp <- randomForest(
+  formula = Day~ .,
+  data    = otu_train,
+  xtest   = x_test,
+  ytest   = y_test,
+  ntree =500
+)
+
+oob <- sqrt(m1$mse)
+validation <- sqrt(rf_oob_comp$mse)
+
+# compare error rates
+tibble::tibble(
+  `Out of Bag Error` = oob,
+  `Test error` = validation,
+  ntrees = 1:rf_oob_comp$ntree
+) %>%
+  gather(Metric, Error, -ntrees) %>%
+  ggplot(aes(ntrees, Error, color = Metric)) +
+  geom_line() +
+  xlab("Number of trees")
+
+rf_oob_comp
+plot(rf_oob_comp)
+which.min(rf_oob_comp$mse)
+sqrt(m1$mse[which.min(rf_oob_comp$mse)])
+
+
+# ANCOM -------------------------------------------------------------------
+
+ancom.W = function(otu_data,var_data,
+                   adjusted,repeated,
+                   main.var,adj.formula,
+                   repeat.var,long,rand.formula,
+                   multcorr,sig){
+  
+  n_otu=dim(otu_data)[2]-1
+  
+  otu_ids=colnames(otu_data)[-1]
+  
+  if(repeated==F){
+    data_comp=data.frame(merge(otu_data,var_data,by="Sample.ID",all.y=T),row.names=NULL)
+    #data_comp=data.frame(merge(otu_data,var_data[,c("Sample.ID",main.var)],by="Sample.ID",all.y=T),row.names=NULL)
+  }else if(repeated==T){
+    data_comp=data.frame(merge(otu_data,var_data,by="Sample.ID"),row.names=NULL)
+    # data_comp=data.frame(merge(otu_data,var_data[,c("Sample.ID",main.var,repeat.var)],by="Sample.ID"),row.names=NULL)
+  }
+  
+  base.formula = paste0("lr ~ ",main.var)
+  if(repeated==T){
+    repeat.formula = paste0(base.formula," | ", repeat.var)
+  }
+  if(adjusted==T){
+    adjusted.formula = paste0(base.formula," + ", adj.formula)
+  }
+  
+  if( adjusted == F & repeated == F ){
+    fformula  <- formula(base.formula)
+  } else if( adjusted == F & repeated == T & long == T ){
+    fformula  <- formula(base.formula)   
+  }else if( adjusted == F & repeated == T & long == F ){
+    fformula  <- formula(repeat.formula)   
+  }else if( adjusted == T & repeated == F  ){
+    fformula  <- formula(adjusted.formula)   
+  }else if( adjusted == T & repeated == T  ){
+    fformula  <- formula(adjusted.formula)   
+  }else{
+    stop("Problem with data. Dataset should contain OTU abundances, groups, 
+         and optionally an ID for repeated measures.")
+  }
+  
+  
+  
+  if( repeated==FALSE & adjusted == FALSE){
+    if( length(unique(data_comp[,which(colnames(data_comp)==main.var)]))==2 ){
+      tfun <- exactRankTests::wilcox.exact
+    } else{
+      tfun <- stats::kruskal.test
+    }
+  }else if( repeated==FALSE & adjusted == TRUE){
+    tfun <- stats::aov
+  }else if( repeated== TRUE & adjusted == FALSE & long == FALSE){
+    tfun <- stats::friedman.test
+  }else if( repeated== TRUE & adjusted == FALSE & long == TRUE){
+    tfun <- nlme::lme
+  }else if( repeated== TRUE & adjusted == TRUE){
+    tfun <- nlme::lme
+  }
+  
+  logratio.mat <- matrix(NA, nrow=n_otu, ncol=n_otu)
+  for(ii in 1:(n_otu-1)){
+    for(jj in (ii+1):n_otu){
+      data.pair <- data_comp[,which(colnames(data_comp)%in%otu_ids[c(ii,jj)])]
+      lr <- log((1+as.numeric(data.pair[,1]))/(1+as.numeric(data.pair[,2])))
+      
+      lr_dat <- data.frame( lr=lr, data_comp,row.names=NULL )
+      
+      if(adjusted==FALSE&repeated==FALSE){  ## Wilcox, Kruskal Wallis
+        logratio.mat[ii,jj] <- tfun( formula=fformula, data = lr_dat)$p.value
+      }else if(adjusted==FALSE&repeated==TRUE&long==FALSE){ ## Friedman's 
+        logratio.mat[ii,jj] <- tfun( formula=fformula, data = lr_dat)$p.value
+      }else if(adjusted==TRUE&repeated==FALSE){ ## ANOVA
+        model=tfun(formula=fformula, data = lr_dat,na.action=na.omit)   
+        picker=which(gsub(" ","",row.names(summary(model)[[1]]))==main.var)  
+        logratio.mat[ii,jj] <- summary(model)[[1]][["Pr(>F)"]][picker]
+      }else if(repeated==TRUE&long==TRUE){ ## GEE
+        model=tfun(fixed=fformula,data = lr_dat,
+                   random = formula(rand.formula),
+                   correlation=corAR1(),
+                   na.action=na.omit)   
+        picker=which(gsub(" ","",row.names(anova(model)))==main.var)
+        logratio.mat[ii,jj] <- anova(model)[["p-value"]][picker]
+      }
+      
+    }
+  } 
+  
+  ind <- lower.tri(logratio.mat)
+  logratio.mat[ind] <- t(logratio.mat)[ind]
+  
+  
+  logratio.mat[which(is.finite(logratio.mat)==FALSE)] <- 1
+  
+  mc.pval <- t(apply(logratio.mat,1,function(x){
+    s <- p.adjust(x, method = "BH")
+    return(s)
+  }))
+  
+  a <- logratio.mat[upper.tri(logratio.mat,diag=FALSE)==TRUE]
+  
+  b <- matrix(0,ncol=n_otu,nrow=n_otu)
+  b[upper.tri(b)==T] <- p.adjust(a, method = "BH")
+  diag(b)  <- NA
+  ind.1    <- lower.tri(b)
+  b[ind.1] <- t(b)[ind.1]
+  
+  #########################################
+  ### Code to extract surrogate p-value
+  surr.pval <- apply(mc.pval,1,function(x){
+    s0=quantile(x[which(as.numeric(as.character(x))<sig)],0.95)
+    # s0=max(x[which(as.numeric(as.character(x))<alpha)])
+    return(s0)
+  })
+  #########################################
+  ### Conservative
+  if(multcorr==1){
+    W <- apply(b,1,function(x){
+      subp <- length(which(x<sig))
+    })
+    ### Moderate
+  } else if(multcorr==2){
+    W <- apply(mc.pval,1,function(x){
+      subp <- length(which(x<sig))
+    })
+    ### No correction
+  } else if(multcorr==3){
+    W <- apply(logratio.mat,1,function(x){
+      subp <- length(which(x<sig))
+    })
+  }
+  
+  return(W)
+  }
+
+
+
+ANCOM.main = function(OTUdat,Vardat,
+                      adjusted,repeated,
+                      main.var,adj.formula,
+                      repeat.var,longitudinal,
+                      random.formula,
+                      multcorr,sig,
+                      prev.cut){
+  
+  p.zeroes=apply(OTUdat[,-1],2,function(x){
+    s=length(which(x==0))/length(x)
+  })
+  
+  zeroes.dist=data.frame(colnames(OTUdat)[-1],p.zeroes,row.names=NULL)
+  colnames(zeroes.dist)=c("Taxon","Proportion_zero")
+  
+  zero.plot = ggplot(zeroes.dist, aes(x=Proportion_zero)) + 
+    geom_histogram(binwidth=0.1,colour="black",fill="white") + 
+    xlab("Proportion of zeroes") + ylab("Number of taxa") +
+    theme_bw()
+  
+  #print(zero.plot)
+  
+  OTUdat.thinned=OTUdat
+  OTUdat.thinned=OTUdat.thinned[,c(1,1+which(p.zeroes<prev.cut))]
+  
+  otu.names=colnames(OTUdat.thinned)[-1]
+  
+  W.detected   <- ancom.W(OTUdat.thinned,Vardat,
+                          adjusted,repeated,
+                          main.var,adj.formula,
+                          repeat.var,longitudinal,random.formula,
+                          multcorr,sig)
+  
+  W_stat       <- W.detected
+  
+  
+  ### Bubble plot
+  
+  W_frame = data.frame(otu.names,W_stat,row.names=NULL)
+  W_frame = W_frame[order(-W_frame$W_stat),]
+  
+  W_frame$detected_0.9=rep(FALSE,dim(W_frame)[1])
+  W_frame$detected_0.8=rep(FALSE,dim(W_frame)[1])
+  W_frame$detected_0.7=rep(FALSE,dim(W_frame)[1])
+  W_frame$detected_0.6=rep(FALSE,dim(W_frame)[1])
+  
+  W_frame$detected_0.9[which(W_frame$W_stat>0.9*(dim(OTUdat.thinned[,-1])[2]-1))]=TRUE
+  W_frame$detected_0.8[which(W_frame$W_stat>0.8*(dim(OTUdat.thinned[,-1])[2]-1))]=TRUE
+  W_frame$detected_0.7[which(W_frame$W_stat>0.7*(dim(OTUdat.thinned[,-1])[2]-1))]=TRUE
+  W_frame$detected_0.6[which(W_frame$W_stat>0.6*(dim(OTUdat.thinned[,-1])[2]-1))]=TRUE
+  
+  final_results=list(W_frame,zero.plot)
+  names(final_results)=c("W.taxa","PLot.zeroes")
+  return(final_results)
+}
+
+physeq_phy <- tax_glom(physeq, taxrank = 'Phylum')
+
+day_pairwise <- function(physeq) {
+  physeq_1 <- subset_samples(physeq, Day == '1')
+  physeq_5 <- subset_samples(physeq, Day == '5')
+  physeq_9 <- subset_samples(physeq, Day == '9')
+  physeq_13 <- subset_samples(physeq, Day == '13')
+  physeq_17 <- subset_samples(physeq, Day == '17')
+  physeq_22 <- subset_samples(physeq, Day == '22')
+  return(list(physeq_15 <- merge_phyloseq(physeq_1, physeq_5),
+              physeq_19 <- merge_phyloseq(physeq_1, physeq_9),
+              physeq_113 <- merge_phyloseq(physeq_1, physeq_13),
+              physeq_117 <- merge_phyloseq(physeq_1, physeq_17),
+              physeq_131 <- merge_phyloseq(physeq_1, physeq_22),
+              physeq_59 <- merge_phyloseq(physeq_9, physeq_5),
+              physeq_513 <- merge_phyloseq(physeq_13, physeq_5),
+              physeq_517 <- merge_phyloseq(physeq_17, physeq_5),
+              physeq_522 <- merge_phyloseq(physeq_22, physeq_5),
+              physeq_913 <- merge_phyloseq(physeq_9, physeq_13),
+              physeq_917 <- merge_phyloseq(physeq_9, physeq_17),
+              physeq_922 <- merge_phyloseq(physeq_9, physeq_22),
+              physeq_1317 <- merge_phyloseq(physeq_17, physeq_13),
+              physeq_1322 <- merge_phyloseq(physeq_17, physeq_22),
+              physeq_1722 <- merge_phyloseq(physeq_17, physeq_22)))
+}
+
+list_for_ancom_phy <- day_pairwise(physeq_phy)
+
+physeq_fam <- tax_glom(physeq, taxrank = 'Family')
+list_for_ancom_fam <- day_pairwise(physeq_fam)
+
+otu_ancom_make <- function(physeq) {
+  otu_ancom <- data.frame(otu_table(physeq))
+  otu_ancom <- data.frame(t(otu_ancom))
+  Sample.ID <- rownames(otu_ancom)
+  rownames(otu_ancom) <- NULL
+  otu_ancom <- cbind(Sample.ID, otu_ancom)
+  return(otu_ancom)
+}
+
+metadata_ancom <- metadata
+colnames(metadata_ancom)[1] <- 'Sample.ID'
+
+ancom_results_phy <- list()
+
+for(i in 1:length(list_for_ancom_phy)) {
+  otu_ancom <- otu_ancom_make(list_for_ancom_phy[[i]])
+  comparison_test <- ANCOM.main(OTUdat = otu_ancom,
+                                Vardat = metadata_ancom,
+                                adjusted = FALSE,
+                                repeated = F,
+                                main.var = "Day",
+                                adj.formula = NULL,
+                                repeat.var=NULL,
+                                longitudinal=FALSE,
+                                random.formula=NULL,
+                                multcorr=2,
+                                sig=0.05,
+                                prev.cut=0.90)
+  w_values <- data.frame(comparison_test$W.taxa)
+  tax <- data.frame(tax_table(physeq))
+  tax <- tax %>% select(Kingdom, Phylum)
+  tax$otu.names <- rownames(tax)
+  ancom_sign_taxa <- merge(w_values, tax, by='otu.names')
+  ancom_sign_taxa <- ancom_sign_taxa[,-1]
+  ancom_results_phy[[i]] <- ancom_sign_taxa
+}
+
+ancom_results_fam <- list()
+
+for(i in 1:length(list_for_ancom_fam)) {
+  otu_ancom <- otu_ancom_make(list_for_ancom_fam[[i]])
+  comparison_test <- ANCOM.main(OTUdat = otu_ancom,
+                                Vardat = metadata_ancom,
+                                adjusted = FALSE,
+                                repeated = F,
+                                main.var = "Day",
+                                adj.formula = NULL,
+                                repeat.var=NULL,
+                                longitudinal=FALSE,
+                                random.formula=NULL,
+                                multcorr=2,
+                                sig=0.05,
+                                prev.cut=0.90)
+  w_values <- data.frame(comparison_test$W.taxa)
+  tax <- data.frame(tax_table(physeq))
+  tax <- tax %>% select(Kingdom, Phylum, Order, Class, Family)
+  tax$otu.names <- rownames(tax)
+  ancom_sign_taxa <- merge(w_values, tax, by='otu.names')
+  ancom_sign_taxa <- ancom_sign_taxa[,-1]
+  ancom_results_fam[[i]] <- ancom_sign_taxa
+}
+
+# Alpha Div. --------------------------------------------------------------
+
+erich <- estimate_richness(physeq, measures = c("Observed", 'Chao1', "Shannon", "InvSimpson"))
+erich <- add_rownames(erich, "SampleID")
+erich_sums <- merge(erich, metadata)
+
+erich_sums %>% group_by(Day) %>% summarise_at(c('Observed', 'Chao1', "Shannon", "InvSimpson"), funs(mean, sd))
+
+erich <- erich %>%
+  gather(Index, Observation, c("Observed", 'Chao1', "Shannon", "InvSimpson"), na.rm = TRUE)
+
+
+rich = merge(erich, metadata)
+
+prepare_samples_kw <- function(rich) {
+  return(list(rich_obs <- rich %>% filter(Index == 'Observed'),
+              rich_cha <- rich %>% filter(Index == 'Chao1'),
+              rich_sha <- rich %>% filter(Index == 'Shannon'),
+              rich_inv <- rich %>% filter(Index == 'InvSimpson')))
+}
+
+kw_values <- prepare_samples_kw(rich)
+
+
+for(i in 1:length(kw_values)) {
+  print(kruskal.test(Observation ~ Day, data = kw_values[[i]]))
+  out <- posthoc.kruskal.nemenyi.test(x=kw_values[[i]]$Observation, g=kw_values[[i]]$Day, dist='Tukey', p.adjust.method = 'bonf' )
+  print(out$p.value)
+}
+
+rich$Day <- factor(rich$Day, levels = c('1', '5', '9', '13', '17', '22'))
+
+p <- ggplot(rich, aes(x=Day, y=Observation, fill=Day)) +
+  geom_boxplot() +
+  geom_jitter(aes(shape=Swab_Areas), color = '#95938B', position=position_jitter(0.2), size = 3) + 
+  ylab('Alpha-Diversity Metric') + labs(shape='Sampling Locations') +
+  scale_fill_manual(values = c('#5EBF97', '#E37D3E', '#886F98', '#E4BE18', '#A41400', '#182159')) + 
+  facet_wrap(~Index, scales="free") +
+  scale_shape_manual(values=c(2,6,1,0,5))
+p
+
+
+
+# Beta Div. ---------------------------------------------------------------
+
+ord = ordinate(physeq_beta, method="PCoA", distance="unifrac")
+
+ordplot=plot_ordination(physeq_beta, ord, color="Day", shape = 'Swab_Areas') +
+  scale_color_manual(values = c('#5EBF97', '#E37D3E', '#886F98', '#E4BE18', '#A41400', '#182159')) +
+  scale_shape_manual(values=c(17,8,16,15,18)) + geom_point(size = 5)
+
+ordplot
+
+theme_set(theme_classic(base_size = 18))
+tiff("Fig2.TIF", width = 4500, height = 4000, res=300)
+ggarrange(p,ordplot, 
+          labels = c("A", "B"),
+          nrow = 2, ncol = 2)
+dev.off()
+
+beta_diversity_calc_day <- function(physeq) {
+  GPdist=phyloseq::distance(physeq, "unifrac")
+  sampledf <- data.frame(sample_data(physeq))
+  print(return(adonis(GPdist ~ Day, data = sampledf)))
+}
+
+beta_dispersion_calc_day <- function(physeq) {
+  GPdist=phyloseq::distance(physeq, "unifrac")
+  sampledf <- data.frame(sample_data(physeq))
+  beta <- betadisper(GPdist, sampledf$Day)
+  print(return(permutest(beta)))
+}
+
+beta_diversity_calc_day(physeq_beta)
+beta_dispersion_calc_day(physeq_beta)
+
+day_pairwise <- function(physeq) {
+  physeq_1 <- subset_samples(physeq, Day == '1')
+  physeq_5 <- subset_samples(physeq, Day == '5')
+  physeq_9 <- subset_samples(physeq, Day == '9')
+  physeq_13 <- subset_samples(physeq, Day == '13')
+  physeq_17 <- subset_samples(physeq, Day == '17')
+  physeq_22 <- subset_samples(physeq, Day == '22')
+  return(list(physeq_15 <- merge_phyloseq(physeq_1, physeq_5),
+              physeq_19 <- merge_phyloseq(physeq_1, physeq_9),
+              physeq_113 <- merge_phyloseq(physeq_1, physeq_13),
+              physeq_117 <- merge_phyloseq(physeq_1, physeq_17),
+              physeq_131 <- merge_phyloseq(physeq_1, physeq_22),
+              physeq_59 <- merge_phyloseq(physeq_9, physeq_5),
+              physeq_513 <- merge_phyloseq(physeq_13, physeq_5),
+              physeq_517 <- merge_phyloseq(physeq_17, physeq_5),
+              physeq_522 <- merge_phyloseq(physeq_22, physeq_5),
+              physeq_913 <- merge_phyloseq(physeq_9, physeq_13),
+              physeq_917 <- merge_phyloseq(physeq_9, physeq_17),
+              physeq_922 <- merge_phyloseq(physeq_9, physeq_22),
+              physeq_1317 <- merge_phyloseq(physeq_17, physeq_13),
+              physeq_1322 <- merge_phyloseq(physeq_17, physeq_22),
+              physeq_1722 <- merge_phyloseq(physeq_17, physeq_22)))
+}
+
+day_list <- day_pairwise(physeq_beta)
+
+for(i in 1:length(day_list)) {
+  print(beta_diversity_calc_day(day_list[[i]]))
+  print(beta_dispersion_calc_day(day_list[[i]]))
+}
+
+
+# Logistical Regression ---------------------------------------------------
+
+#look at phylum level, changes over time in relative abundance
+#pick out significant phylum found in random forest model
+#build logisitcal model using phyla
+
+otu <- as.data.frame(t(otu_table(physeq)))
+otu$SampleID <- rownames(otu)
+meta_sa <- metadata %>% select(SampleID, Day, Location)
+otu <- merge(meta_sa, otu, by = 'SampleID')
+otu <- otu[,-1]
+names(otu) <- make.names(names(otu))
+
+m1 <- randomForest(
+  formula = Day ~ .,
+  data    = otu,
+  ntree= 500, importance = TRUE
+)
+
+m1
+
+
+  imp <- importance(m1, type=2)
+  imp <- data.frame(predictors = rownames(imp), imp)
+  imp.sort <- arrange(imp, desc(IncNodePurity))
+  imp.sort$predictors <- factor(imp.sort$predictors, levels = imp.sort$predictors)
+  imp.20 <- imp.sort[1:20, ]
+  imp.20$predictors <- sub('X', '', imp.20$predictors)
+  colnames(imp.20) <- c('OTUID', 'IncNodePurity')
+  imp.20 <- merge(imp.20, tax, by = 'OTUID')
+  write.csv(imp.20, 'randomforestpigs.csv')
+
+
+physeq_phyla <- tax_glom(physeq, taxrank = 'Phylum')
+
+#removing singletons and phyla not present in 10% of samples
+physeq_phyla <- filter_taxa(physeq_phyla, function(x) sum(x > 1) > (0.10*length(x)), TRUE)
+
+physeq_phyla_rel <- transform_sample_counts(physeq_phyla, function(OTU) OTU/sum(OTU) )
+
+
+# Relative Ab. ------------------------------------------------------------
+
+df <- psmelt(physeq_phyla_rel) 
+Trtdata <- ddply(df, c("Phylum", 'Day'), summarise,
+                 N    = length(Abundance),
+                 mean = mean(Abundance),
+                 sd   = sd(Abundance),
+                 se   = sd / sqrt(N)
+)
+
+
+
+Trtdata$Phylum <- as.character(Trtdata$Phylum)
+
+targets <- c('D_1__Bacteroidetes', 'D_1__Chlamydiae', ' D_1__Cyanobacteria',
+             'D_1__Dependentiae', 'D_1__Elusimicrobia', 'D_1__Fibrobacteres', 
+             'D_1__Latescibacteria', 'D_1__Margulisbacteria', ' D_1__Tenericutes', 
+             ' D_1__Thaumarchaeota')
+
+Trtdata_one <- filter(Trtdata, Phylum %in% targets)  
+
+adataplot=ggplot(Trtdata_one, aes(x=Day,y=mean))+
+  geom_bar(aes(fill = Phylum),colour="black", stat="identity") + 
+  scale_fill_manual(values = c('#6F2FED', '#D266C8','#ED402F' , '#2FED6D',
+                               '#ED9C2F', '#2FA4ED', '#EDC72F'
+                               )) + ylab('Relative Abundance of Phyla')
+adataplot
+
+targets <- c('D_1__Latescibacteria',
+             'D_1__Margulisbacteria', 
+             'D_1__Bacteroidetes')
+
+Trtdata_five <- filter(Trtdata, Phylum %in% targets)
+
+bdataplot=ggplot(Trtdata_five, aes(x=Day,y=mean))+
+  geom_bar(aes(fill = Phylum),colour="black", stat="identity") +
+  scale_fill_manual(values=c('#6F2FED', '#2FA4ED', '#EDC72F')) + 
+  ylab('Relative Abundance of Phyla')
+bdataplot
+
+targets <- c('D_1__Margulisbacteria')
+
+Trtdata_nine <- filter(Trtdata, Phylum %in% targets)
+
+cdataplot=ggplot(Trtdata_nine, aes(x=Day,y=mean))+
+  geom_bar(aes(fill = Phylum),colour="black", stat="identity") +scale_fill_manual(values = c('#EDC72F')) + 
+  ylab('Relative Abundance of Phyla')
+cdataplot
+
+theme_set(theme_classic(base_size = 18))
+tiff("Rel_abund_fig_ancom.TIF", width = 2000, height = 4500, res=300)
+ggarrange(adataplot, bdataplot, cdataplot, 
+          labels = c("A", "B", 'C'),
+          nrow = 3, ncol = 1)
+dev.off()
+
+Trtdata[Trtdata$mean < 0.01, "Phylum"] <- 'Non-dominant'
+
+target <- c('D_1__Bacteroidetes', 'D_1__Firmicutes', 'D_1__Proteobacteria')
+
+Trtdata_Test <- filter(Trtdata, Phylum %in% target)  
+
+cdataplot=ggplot(Trtdata_Test, aes(x=Day,y=mean))+
+  geom_bar(aes(fill = Phylum),colour="black", stat="identity", position = position_dodge()) +  
+  geom_errorbar(aes(ymin=mean-se, ymax=mean+se), width=0.3, 
+                position=position_dodge(.9)) +
+  geom_line(stat="identity")
+  
+cdataplot
+
+cdataplot=ggplot(Trtdata_Test, aes(x=Day,y=mean))+
+  geom_line(aes(x=Day,y=mean),stat="identity")
+
+cdataplot
+
+ggplot(df, aes(x=Var2, y=value, fill=Var1)) + 
+  geom_bar(stat="identity", color="black", position=position_dodge(width = 0.9)) + 
+  geom_errorbar(aes(ymax=yend, ymin=ybegin), width=0.6, position=position_dodge(width = 0.9)) + 
+  theme_bw() +
+  theme(panel.grid.major.x = element_blank(), panel.grid.minor = element_blank())
+# lin reg -----------------------------------------------------------------
+
+erich <- estimate_richness(physeq, measures = c("Observed", 'Chao1', "Shannon", "InvSimpson"))
+erich <- add_rownames(erich, "SampleID")
+
+physeq_lr1 <- subset_taxa(physeq_phyla_rel, Phylum=='D_1__Firmicutes')
+physeq_lr2 <- subset_taxa(physeq_phyla_rel, Phylum=='D_1__Bacteroidetes')
+physeq_lr3 <- subset_taxa(physeq_phyla_rel, Phylum=='D_1__Proteobacteria')
+
+physeq_lr <- merge_phyloseq(physeq_lr1, physeq_lr2, physeq_lr3)
+physeq_lr
+
+linreg <- as.data.frame(t(otu_table(physeq_lr)))
+linreg$SampleID <- rownames(linreg)
+colnames(linreg) <- c('Firmicutes', 'Bacteroidetes', 'Proteobacteria', 'SampleID')
+linreg_f <- merge(linreg, metadata, by = 'SampleID')
+linreg_ff <- merge(linreg_f, erich)
+
+
+m0 <- lm(Day ~ 1, data = linreg_f)
+m1 <- lm(Day ~ poly(Firmicutes + Bacteroidetes + Proteobacteria), data = linreg_f)
+m2 <- lm(Day ~ Bacteroidetes, data = linreg_f)
+m3 <- lm(Day ~ poly(Bacteroidetes + Chao1), data = linreg_ff)
+m4 <- lm(Day ~ poly(InvSimpson + Temp), data = linreg_ff)
+m5 <- lm(Day ~ poly(Shannon + Temp), data = linreg_ff)
+m6 <- lm(Day ~ poly(Proteobacteria + Bacteroidetes + Temp), data = linreg_f)
+m7 <- lm(Day ~ Proteobacteria + Bacteroidetes + Temp, data = linreg_f)
+m8 <- lm(Day ~ Proteobacteria + Bacteroidetes, data = linreg_f)
+m9 <- lm(Day ~ Firmicutes + Proteobacteria, data = linreg_f)
+
+
+anova(m0,m1,m2,m3,m4,m5,m6,m7,m8,m9)
+AIC(m0, m1, m7)
+
+#tried lm(Day ~ Firmicutes + Bacteroidetes + Proteobacteria, data = linreg_f)
+#lm(Day ~ Bacteroidetes + Proteobacteria + Chao1, data = linreg_ff)
+#lm(Day ~ Proteobacteria, data = linreg_f)
+#
+
+
+
+#best model m1!
+summary(m1)
+
+cooks <- cooks.distance(m1)
+plot(cooks, pch="*", cex=2) 
+abline(h = 4*mean(cooks, na.rm=T), col="red")
+text(x=1:length(cooks)+1, y=cooks, labels=ifelse(cooks>4*mean(cooks, na.rm=T),names(cooks),""), col="red")
+
+influential <- as.numeric(names(cooks)[(cooks > 4*mean(cooks, na.rm=T))])
+head(linreg_f[influential, ])  
+
+linreg_test <- linreg_f%>%
+  filter(SampleID != c('FP111'))
+
+
+
+m0 <- lm(Day ~ 1, data = linreg_test)
+m1 <- lm(Day ~ poly(Firmicutes + Bacteroidetes + Proteobacteria), data = linreg_test)
+
+anova(m0,m1)
+AIC(m0,m1)
+
+a <- ggplot(linreg_test, aes(y=Firmicutes, x=Day)) +
+  geom_point(color = '#3E8E18', size=4) + stat_smooth(method = "lm", formula = y ~ x + I(x^2), size = 1) +
+  ylab('Relative Abundance of Firmicutes')
+a
+
+b <- ggplot(linreg_test, aes(y=Bacteroidetes, x=Day)) +
+  geom_point(color= '#1C5AA6', size = 4) + stat_smooth(method = "lm", formula = y ~ x + I(x^2), size = 1) +
+  ylab('Relative Abundance of Bacteroidetes')
+b
+
+c <- ggplot(linreg_test, aes(y=Proteobacteria, x=Day)) +
+  geom_point(color = '#7732BF', size = 4) + stat_smooth(method = "lm", formula = y ~ x + I(x^2), size = 1) +
+  ylab('Relative Abundance of Proteobacteria')
+c
+
+theme_set(theme_classic(base_size = 10))
+tiff("linreg.TIF", width = 3000, height = 1000, res=300)
+ggarrange(a,b,c, 
+          labels = c("A", "B", "C"),
+          nrow = 1, ncol = 3)
+dev.off()
+
+
+#family
+#going to choose families in top twenty predictors represented more than once. 
+
+# D_4__Bacteroidaceae, D_4__Clostridiaceae1, D_4__FamilyXI, D_4__Methanobacteriaceae, D_4__Peptostreptococcaceae
+
+physeq_fam <- tax_glom(physeq, taxrank = 'Family')
+physeq_fam
+
+physeq_fam_rel <- transform_sample_counts(physeq_fam, function(OTU) OTU/sum(OTU) )
+physeq_lr1 <- subset_taxa(physeq_fam_rel, Family=='D_4__Bacteroidaceae')
+physeq_lr2 <- subset_taxa(physeq_fam_rel, Family=='D_4__Clostridiaceae1')
+physeq_lr3 <- subset_taxa(physeq_fam_rel, Family=='D_4__FamilyXI')
+physeq_lr4 <- subset_taxa(physeq_fam_rel, Family=='D_4__Methanobacteriaceae')
+physeq_lr5 <- subset_taxa(physeq_fam_rel, Family=='D_4__Peptostreptococcaceae')
+
+physeq_lr <- merge_phyloseq(physeq_lr1, physeq_lr2, physeq_lr3, physeq_lr4, physeq_lr5)
+physeq_lr
+
+linreg <- as.data.frame(t(otu_table(physeq_lr)))
+linreg <- linreg[,-4]
+linreg$SampleID <- rownames(linreg)
+colnames(linreg) <- c('Bacteroidaceae', 'Clostridiaceae1', 'FamilyXI',
+                      'Methanobacteriaceae', 'Peptostreptococcaceae', 'SampleID')
+linreg_f <- merge(linreg, metadata, by = 'SampleID')
+
+
+m0 <- lm(Day ~ 1, data = linreg_f)
+m1 <- lm(Day ~ poly(Firmicutes + Bacteroidetes + Proteobacteria), data = linreg_f)
+
+anova(m0,m1,m2)
+
+#best model m1!
+summary(m2)
+
+cooks <- cooks.distance(m2)
+plot(cooks, pch="*", cex=2) 
+abline(h = 4*mean(cooks, na.rm=T), col="red")
+text(x=1:length(cooks)+1, y=cooks, labels=ifelse(cooks>4*mean(cooks, na.rm=T),names(cooks),""), col="red")
+
+influential <- as.numeric(names(cooks)[(cooks > 4*mean(cooks, na.rm=T))])
+head(linreg_f[influential, ])  
+
+linreg_test <- linreg_f%>%
+  filter(SampleID != c('FP33')) %>%
+  filter(SampleID != c('FP34')) %>%
+  filter(SampleID != c('FP48'))
+
+
+
+m0 <- lm(Day ~ 1, data = linreg_test)
+m1 <- lm(Day ~ Peptostreptococcaceae, data = linreg_test)
+m2 <- lm(Day ~ Peptostreptococcaceae + Bacteroidaceae, data = linreg_test)
+m3 <- lm(Day ~ Peptostreptococcaceae + Bacteroidaceae + Clostridiaceae1, data = linreg_test)
+m4 <- lm(Day ~ Bacteroidaceae, data = linreg_test)
+m5 <- lm(Day ~ Peptostreptococcaceae + Bacteroidaceae + FamilyXI, data = linreg_test)
+m6 <- lm(Day ~ Peptostreptococcaceae + Bacteroidaceae + Clostridiaceae1 +
+           FamilyXI + Methanobacteriaceae, data = linreg_test)
+
+anova(m0,m1,m2, m3,m4,m5, m6)
+summary(m5)
+
+a <- ggplot(linreg_test, aes(y=Peptostreptococcaceae, x=Day)) +
+  geom_point() + geom_smooth(method = "lm")
+
+b <- ggplot(linreg_test, aes(y=Bacteroidaceae, x=Day)) +
+  geom_point() + geom_smooth(method = "lm")
+
+c <- ggplot(linreg_test, aes(y=FamilyXI, x=Day)) +
+  geom_point() + geom_smooth(method = "lm")
+
+a
+b
+c
+
+theme_set(theme_classic(base_size = 18))
+tiff("linreg.TIF", width = 2000, height = 1500, res=300)
+ggarrange(a,b,c, 
+          labels = c("A", "B", "C"),
+          nrow = 1, ncol = 3)
+dev.off()
+
+
+
+# ADH ---------------------------------------------------------------------
+
+
+# Random Forest -----------------------------------------------------------
+otu <- as.data.frame(t(otu_table(physeq)))
+otu$SampleID <- rownames(otu)
+meta_sa <- metadata %>% select(SampleID, ADH)
+otu <- merge(meta_sa, otu, by = 'SampleID')
+otu <- otu[,-1]
+names(otu) <- make.names(names(otu))
+
+m1 <- randomForest(
+  formula = ADH ~ .,
+  data    = otu,
+  ntree= 500
+)
+
+m1
+plot(m1)
+
+which.min(m1$mse)
+sqrt(m1$mse[which.min(m1$mse)])
+
+valid_split <- initial_split(otu, .8)
+otu_train <- analysis(valid_split)
+otu_valid <- assessment(valid_split)
+x_test <- otu_valid[setdiff(names(otu_valid), "ADH")]
+y_test <- otu_valid$ADH
+
+rf_oob_comp <- randomForest(
+  formula = ADH~ .,
+  data    = otu_train,
+  xtest   = x_test,
+  ytest   = y_test,
+  ntree = 500
+)
+
+m1
+rf_oob_comp
+
+oob <- sqrt(m1$mse)
+validation <- sqrt(rf_oob_comp$mse)
+
+# compare error rates
+tibble::tibble(
+  `Out of Bag Error` = oob,
+  `Test error` = validation,
+  ntrees = 1:rf_oob_comp$ntree
+) %>%
+  gather(Metric, Error, -ntrees) %>%
+  ggplot(aes(ntrees, Error, color = Metric)) +
+  geom_line() +
+  xlab("Number of trees")
+
+rf_oob_comp
+plot(rf_oob_comp)
+which.min(rf_oob_comp$mse)
+sqrt(m1$mse[which.min(rf_oob_comp$mse)])
+
