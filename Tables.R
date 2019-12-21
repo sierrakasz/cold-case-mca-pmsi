@@ -265,9 +265,6 @@ ANCOM.main = function(OTUdat,Vardat,
   return(final_results)
 }
 
-# examining phylum level, reduce phyloseq object to phylum
-physeq_phy <- tax_glom(physeq, taxrank = 'Phylum')
-
 # subsetting phyloseq objects in pairwise day comparisons
 day_pairwise <- function(physeq) {
   physeq_1 <- subset_samples(physeq, Day == '1')

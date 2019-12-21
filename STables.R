@@ -12,6 +12,7 @@ library(ggpubr)
 library(ggRandomForests)
 library(ggthemes)
 library(lme4)
+library(outliers)
 library(phyloseq)
 library(plyr)
 library(PMCMR)
@@ -58,13 +59,27 @@ physeq_beta <- rarefy_even_depth(physeq_otu.tree, sample.size = 5000)
 physeq <- rarefy_even_depth(physeq_otu.tax, sample.size = 5000)
 
 ## S Table 1
-# Table was built in excel
+air_temp <- read.csv("temp_data_coldcase_MSU.csv")
+colnames(air_temp) <- c('Date', 'Temp', 'Location')
+air_temp <- air_temp[complete.cases(air_temp),]
+df_air_temp <- ddply(air_temp, c('Location'), summarise,
+                     mean_temp = mean(Temp),
+                     sd_temp   = sd(Temp),
+                     min_temp = min(Temp),
+                     max_temp = max(Temp)
+)
+
+air_temp_gr <- air_temp %>% filter(Location == 'Grand Rapids')
+air_temp_l <- air_temp %>% filter(Location != 'Grand Rapids')
+
+grubbs.test(air_temp_gr$Temp, type = 11)
+grubbs.test(air_temp_l$Temp, type = 11)
 
 ## S Table 2
-# Table was built in excel
+# See above
 
 ## S Table 3
-# Table was built in excel
+# Table was built in excel 
 
 ## S Table 4
 # Table was built in excel
@@ -706,8 +721,12 @@ sqrt(m1$mse[which.min(rf_oob_comp$mse)])
 
 
 ## Model Comparison for linear regression 
-erich <- estimate_richness(physeq, measures = c("Observed", 'Chao1', "Shannon", "InvSimpson"))
-erich <- add_rownames(erich, "SampleID")
+physeq_phyla <- tax_glom(physeq, taxrank = 'Phylum')
+
+#removing singletons and phyla not present in 10% of samples
+physeq_phyla <- filter_taxa(physeq_phyla, function(x) sum(x > 1) > (0.10*length(x)), TRUE)
+
+physeq_phyla_rel <- transform_sample_counts(physeq_phyla, function(OTU) OTU/sum(OTU) )
 
 physeq_lr1 <- subset_taxa(physeq_phyla_rel, Phylum=='D_1__Firmicutes')
 physeq_lr2 <- subset_taxa(physeq_phyla_rel, Phylum=='D_1__Bacteroidetes')
@@ -720,31 +739,29 @@ linreg <- as.data.frame(t(otu_table(physeq_lr)))
 linreg$SampleID <- rownames(linreg)
 colnames(linreg) <- c('Firmicutes', 'Bacteroidetes', 'Proteobacteria', 'SampleID')
 linreg_f <- merge(linreg, metadata, by = 'SampleID')
-linreg_ff <- merge(linreg_f, erich)
-
 
 m0 <- lm(Day ~ 1, data = linreg_f)
-m1 <- lm(Day ~ poly(Firmicutes + Bacteroidetes + Proteobacteria), data = linreg_f)
-m2 <- lm(Day ~ Bacteroidetes, data = linreg_f)
-m3 <- lm(Day ~ poly(Bacteroidetes + Chao1), data = linreg_ff)
-m4 <- lm(Day ~ poly(InvSimpson + Temp), data = linreg_ff)
-m5 <- lm(Day ~ poly(Shannon + Temp), data = linreg_ff)
-m6 <- lm(Day ~ poly(Proteobacteria + Bacteroidetes + Temp), data = linreg_f)
-m7 <- lm(Day ~ Proteobacteria + Bacteroidetes + Temp, data = linreg_f)
-m8 <- lm(Day ~ Proteobacteria + Bacteroidetes, data = linreg_f)
-m9 <- lm(Day ~ Firmicutes + Proteobacteria, data = linreg_f)
+m1 <- lm(Day ~ Firmicutes + Bacteroidetes + Proteobacteria, data = linreg_f)
+m1.1 <- lm(Day~ Firmicutes, data = linreg_f)
+m1.2 <- lm(Day~ Proteobacteria, data = linreg_f)
+m1.3 <- lm(Day~ Bacteroidetes, data = linreg_f)
+#Firmicutes not significant. Try without it
+m2 <- lm(Day ~ Bacteroidetes + Proteobacteria, data = linreg_f)
+# not doing great, add temp
+m3 <- lm(Day ~ Proteobacteria + Bacteroidetes + Temp, data = linreg_f)
+m3.3 <- lm(Day ~ Firmicutes + Proteobacteria + Bacteroidetes + Temp, data = linreg_f)
+#not much better
+#try quadratic 
+m4 <- lm(Day ~ poly(Firmicutes + Bacteroidetes + Proteobacteria), data = linreg_f)
+#Better!
+m5 <- lm(Day ~ poly(Proteobacteria + Bacteroidetes + Temp), data = linreg_f)
+m6 <- lm(Day ~ poly(Proteobacteria + Bacteroidetes), data = linreg_f)
+m7 <- lm(Day ~ poly(Firmicutes + Bacteroidetes + Proteobacteria + Temp), data = linreg_f)
 
+#add models as needed to look at summary
+summary(m7)
 
-anova(m0,m1,m2,m3,m4,m5,m6,m7,m8,m9)
-AIC(m0, m1, m7)
-
-#tried lm(Day ~ Firmicutes + Bacteroidetes + Proteobacteria, data = linreg_f)
-#lm(Day ~ Bacteroidetes + Proteobacteria + Chao1, data = linreg_ff)
-#lm(Day ~ Proteobacteria, data = linreg_f)
-#
-
-#best model m1!
-summary(m1)
+AIC(m0,m1,m1.1, m1.2, m1.3, m2,m3,m3.3, m4,m5, m6, m7)
 
 cooks <- cooks.distance(m1)
 plot(cooks, pch="*", cex=2) 
@@ -764,68 +781,5 @@ m1 <- lm(Day ~ poly(Firmicutes + Bacteroidetes + Proteobacteria), data = linreg_
 
 anova(m0,m1)
 AIC(m0,m1)
-
-
-#family
-#going to choose families in top twenty predictors represented more than once. 
-
-# D_4__Bacteroidaceae, D_4__Clostridiaceae1, D_4__FamilyXI, D_4__Methanobacteriaceae, D_4__Peptostreptococcaceae
-
-physeq_fam <- tax_glom(physeq, taxrank = 'Family')
-physeq_fam
-
-physeq_fam_rel <- transform_sample_counts(physeq_fam, function(OTU) OTU/sum(OTU) )
-physeq_lr1 <- subset_taxa(physeq_fam_rel, Family=='D_4__Bacteroidaceae')
-physeq_lr2 <- subset_taxa(physeq_fam_rel, Family=='D_4__Clostridiaceae1')
-physeq_lr3 <- subset_taxa(physeq_fam_rel, Family=='D_4__FamilyXI')
-physeq_lr4 <- subset_taxa(physeq_fam_rel, Family=='D_4__Methanobacteriaceae')
-physeq_lr5 <- subset_taxa(physeq_fam_rel, Family=='D_4__Peptostreptococcaceae')
-
-physeq_lr <- merge_phyloseq(physeq_lr1, physeq_lr2, physeq_lr3, physeq_lr4, physeq_lr5)
-physeq_lr
-
-linreg <- as.data.frame(t(otu_table(physeq_lr)))
-linreg <- linreg[,-4]
-linreg$SampleID <- rownames(linreg)
-colnames(linreg) <- c('Bacteroidaceae', 'Clostridiaceae1', 'FamilyXI',
-                      'Methanobacteriaceae', 'Peptostreptococcaceae', 'SampleID')
-linreg_f <- merge(linreg, metadata, by = 'SampleID')
-
-
-m0 <- lm(Day ~ 1, data = linreg_f)
-m1 <- lm(Day ~ poly(Firmicutes + Bacteroidetes + Proteobacteria), data = linreg_f)
-
-anova(m0,m1,m2)
-
-#best model m1!
-summary(m2)
-
-cooks <- cooks.distance(m2)
-plot(cooks, pch="*", cex=2) 
-abline(h = 4*mean(cooks, na.rm=T), col="red")
-text(x=1:length(cooks)+1, y=cooks, labels=ifelse(cooks>4*mean(cooks, na.rm=T),names(cooks),""), col="red")
-
-influential <- as.numeric(names(cooks)[(cooks > 4*mean(cooks, na.rm=T))])
-head(linreg_f[influential, ])  
-
-linreg_test <- linreg_f%>%
-  filter(SampleID != c('FP33')) %>%
-  filter(SampleID != c('FP34')) %>%
-  filter(SampleID != c('FP48'))
-
-
-
-m0 <- lm(Day ~ 1, data = linreg_test)
-m1 <- lm(Day ~ Peptostreptococcaceae, data = linreg_test)
-m2 <- lm(Day ~ Peptostreptococcaceae + Bacteroidaceae, data = linreg_test)
-m3 <- lm(Day ~ Peptostreptococcaceae + Bacteroidaceae + Clostridiaceae1, data = linreg_test)
-m4 <- lm(Day ~ Bacteroidaceae, data = linreg_test)
-m5 <- lm(Day ~ Peptostreptococcaceae + Bacteroidaceae + FamilyXI, data = linreg_test)
-m6 <- lm(Day ~ Peptostreptococcaceae + Bacteroidaceae + Clostridiaceae1 +
-           FamilyXI + Methanobacteriaceae, data = linreg_test)
-
-anova(m0,m1,m2, m3,m4,m5, m6)
-summary(m5)
-
 
 

@@ -121,6 +121,7 @@ dev.off()
 air_temp <- read.csv("temp_data_coldcase_MSU.csv")
 colnames(air_temp) <- c('Date', 'Temp', 'Location')
 air_temp <- air_temp[complete.cases(air_temp),]
+
 df_air_temp <- ddply(air_temp, c('Date', 'Location'), summarise,
                      mean_temp = mean(Temp),
                      sd_temp   = sd(Temp)

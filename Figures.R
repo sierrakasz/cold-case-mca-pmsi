@@ -1,5 +1,6 @@
 ## Cold Case Kaszubinski et al. 
 # Figures
+setwd("C:/Users/sierr/Documents/Forensic_Pig")
 
 #Packages
 library(car)
@@ -91,6 +92,7 @@ dev.off()
 # A
 #calculating alpha div metrics
 erich <- estimate_richness(physeq, measures = c("Observed", 'Chao1', "Shannon", "InvSimpson"))
+erich$SampleID <- rownames(erich)
 # tidy data and merge additional metadata from samples
 erich <- erich %>%
   gather(Index, Observation, c("Observed", 'Chao1', "Shannon", "InvSimpson"), na.rm = TRUE)
@@ -100,12 +102,11 @@ rich$Day <- factor(rich$Day, levels = c('1', '5', '9', '13', '17', '22'))
 
 #make alpha div component of figure 3
 p <- ggplot(rich, aes(x=Day, y=Observation, fill=Day)) +
-  geom_boxplot() +
-  geom_jitter(aes(shape=Swab_Areas), color = '#95938B', position=position_jitter(0.2), size = 3) + 
-  ylab('Alpha-Diversity Metric') + labs(shape='Sampling Locations') +
-  scale_fill_manual(values = c('#5EBF97', '#E37D3E', '#886F98', '#E4BE18', '#A41400', '#182159')) + 
-  facet_wrap(~Index, scales="free") +
-  scale_shape_manual(values=c(2,6,1,0,5))
+  geom_boxplot() + 
+  ylab('Alpha-Diversity Metric') +
+  scale_fill_manual(values = c('#5EBF97', '#E37D3E', '#886F98', 
+                               '#E4BE18', '#A41400', '#182159')) + 
+  facet_wrap(~Index, scales="free") 
 p
 
 
