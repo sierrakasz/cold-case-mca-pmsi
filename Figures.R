@@ -1,6 +1,5 @@
 ## Cold Case Kaszubinski et al. 
 # Figures
-setwd("C:/Users/sierr/Documents/Forensic_Pig")
 
 #Packages
 library(car)
@@ -62,28 +61,6 @@ physeq <- rarefy_even_depth(physeq_otu.tax, sample.size = 5000)
 # Figure 1 was made in powerpoint
 
 ## Figure 2
-# Daily mean (SE) water temperature for the study pond over the decomposition time period.
-
-#load the data
-water_temp <- read.csv('water_temp.csv')
-
-#calculate mean and standard deviation water temp by date
-df_water_temp <- ddply(water_temp, c('Date'), summarise,
-                       mean_temp = mean(MeanTemp),
-                       sd_temp   = sd(MeanTemp)
-)
-
-#make the final figure and export as a tiff
-theme_set(theme_bw(base_size = 18))
-tiff("FIG2.TIF", width = 4000, height = 3000, res=300)
-ggplot(df_water_temp, aes(x = Date, y = mean_temp, group = 22)) + 
-  geom_point(color = '#23ABA2', size = 4) +
-  geom_errorbar(width=.5, color = '#23ABA2', aes(ymin=mean_temp-sd_temp, ymax=mean_temp+sd_temp), data=df_water_temp) + 
-  theme(axis.text.x = element_text(angle = 90, hjust = 1))+ ylab('Mean Water Temperature in Celsius (SD)') +
-  geom_line(color = '#23ABA2') 
-dev.off()
-
-## Figure 3
 # Microbial community metrics among days. 
 #A) Alpha-diversity metrics among days including: observed richness (Observed), Chao1, 
 # Shannon diversity, and Inverse Simpson diversity (InvSimpson). 
@@ -104,32 +81,31 @@ rich$Day <- factor(rich$Day, levels = c('1', '5', '9', '13', '17', '22'))
 p <- ggplot(rich, aes(x=Day, y=Observation, fill=Day)) +
   geom_boxplot() + 
   ylab('Alpha-Diversity Metric') +
-  scale_fill_manual(values = c('#5EBF97', '#E37D3E', '#886F98', 
-                               '#E4BE18', '#A41400', '#182159')) + 
+  scale_fill_manual(values = c('#2F6E2B', '#E37D3E', '#886F98', 
+                               '#E4BE18', '#A41400', '#0C677C')) + 
   facet_wrap(~Index, scales="free") 
 p
-
-
 
 # B
 #calculate beta div with unifrac dissimilarity matrix
 ord = ordinate(physeq_beta, method="PCoA", distance="unifrac")
 #create plot
 ordplot=plot_ordination(physeq_beta, ord, color="Day", shape = 'Swab_Areas') +
-  scale_color_manual(values = c('#5EBF97', '#E37D3E', '#886F98', '#E4BE18', '#A41400', '#182159')) +
-  scale_shape_manual(values=c(17,8,16,15,18)) + geom_point(size = 5)
+  scale_color_manual(values = c('#2F6E2B', '#E37D3E', '#886F98', '#E4BE18', '#A41400', '#0C677C')) +
+  scale_shape_manual(values=c(17,8,16,15,18)) + geom_point(size = 5) + 
+  labs(shape = "Sampling Location")
 
 ordplot
 
 #make final figure and export as a tiff 
 theme_set(theme_classic(base_size = 18))
-tiff("FIG3.TIF", width = 4500, height = 4000, res=300)
+tiff("FIG2.TIF", width = 4500, height = 4000, res=300)
 ggarrange(p,ordplot, 
           labels = c("A", "B"),
           nrow = 2, ncol = 2)
 dev.off()
 
-## Figure 4
+## Figure 3
 # Relative abundances of differentially abundant taxa among day indicated by ANCOM. 
 # A) Differentially abundant taxa among day 1, and days 5-22. 
 # B) Differentially abundant taxa among day 5, and days 1 and 9-22. 
@@ -165,7 +141,7 @@ Trtdata_one <- filter(Trtdata, Phylum %in% targets)
 # A
 adataplot=ggplot(Trtdata_one, aes(x=Day,y=mean))+
   geom_bar(aes(fill = Phylum),colour="black", stat="identity") + 
-  scale_fill_manual(values = c('#6F2FED', '#D266C8','#ED402F' , '#2FED6D',
+  scale_fill_manual(values = c('#955DB7', '#D266C8','#ED402F' , '#2FED6D',
                                '#ED9C2F', '#2FA4ED', '#EDC72F'
   )) + ylab('Relative Abundance of Phyla')
 adataplot
@@ -179,7 +155,7 @@ Trtdata_five <- filter(Trtdata, Phylum %in% targets)
 
 bdataplot=ggplot(Trtdata_five, aes(x=Day,y=mean))+
   geom_bar(aes(fill = Phylum),colour="black", stat="identity") +
-  scale_fill_manual(values=c('#6F2FED', '#2FA4ED', '#EDC72F')) + 
+  scale_fill_manual(values=c('#955DB7', '#2FA4ED', '#EDC72F')) + 
   ylab('Relative Abundance of Phyla')
 bdataplot
 
@@ -195,13 +171,118 @@ cdataplot
 
 # Make final figure and export as tiff
 theme_set(theme_classic(base_size = 18))
-tiff("FIG4.TIF", width = 2000, height = 4500, res=300)
+tiff("FIG3.TIF", width = 2000, height = 4500, res=300)
 ggarrange(adataplot, bdataplot, cdataplot, 
           labels = c("A", "B", 'C'),
           nrow = 3, ncol = 1)
 dev.off()
 
+
+## Figure 4
+# Microbial community metrics among sampling locations (DC: dorsal cloth, DS: dorsal skin, M: mouth; VC: ventral cloth, VS: ventral skin).
+# A) Alpha-diversity metrics among sampling locations including: observed richness (Observed), Chao1, Shannon diversity, and Inverse Simpson diversity (InvSimpson). 
+# B) Principal Coordinate Analysis (PCoA) of Unifrac distances among sampling locations. 
+
+erich <- estimate_richness(physeq, measures = c("Observed", 'Chao1', "Shannon", "InvSimpson"))
+erich <- add_rownames(erich, "SampleID")
+
+# get data organized
+erich <- erich %>%
+  gather(Index, Observation, c("Observed", 'Chao1', "Shannon", "InvSimpson"), na.rm = TRUE)
+rich = merge(erich, metadata)
+
+theme_set(theme_bw(base_size = 18))
+
+p <- ggplot(rich, aes(x=Swab_Areas, y=Observation, fill=Swab_Areas)) +
+  geom_boxplot() + xlab('Sampling Location') + ylab('Alpha-diversity Metrics') + 
+  facet_wrap(~Index, scales="free") + labs(fill = "Sampling Location") +
+  scale_x_discrete(labels=c('mouth' = 'M', 'ventral_cloth' = 'VC',
+                            'ventral_skin' = 'VS', 'dorsal_cloth' = 'DC',
+                            'dorsal_skin' = 'DS')) +
+  scale_fill_manual(values = c('#AA8846', '#ECBE64', '#50CF9A', '#317585', '#50B7CF'))
+p
+
+ord = ordinate(physeq_beta, method="PCoA", distance="unifrac")
+ordplot=plot_ordination(physeq_beta, ord, color="Swab_Areas")
+ordplot
+
+p2 <- ordplot +
+  geom_point(size = 4) + stat_ellipse(alpha = 0.03, geom = "polygon", aes(fill = Swab_Areas)) +
+  theme(legend.position = 'none')  +
+  scale_color_manual(values = c('#AA8846', '#ECBE64', '#50CF9A', '#317585', '#50B7CF'))
+p2
+
+theme_set(theme_classic(base_size = 18))
+tiff("FIG4.TIF", width = 4500, height = 3000, res=300)
+ggarrange(p,p2, 
+          labels = c("A", "B"),
+          nrow = 2, ncol = 2)
+dev.off()
+
 ## Figure 5
+# Error of the best performing random forest regression model for PMSI. 
+# True values were regressed against predicted values. 
+# Error bars were made based on the mean square error and the linear regression model equation was reported.  
+
+otu <- as.data.frame(t(otu_table(physeq)))
+otu$SampleID <- rownames(otu)
+meta_sa <- metadata %>% select(SampleID, Day, Location)
+otu <- merge(meta_sa, otu, by = 'SampleID')
+otu <- otu[,-1]
+names(otu) <- make.names(names(otu))
+
+m1 <- randomForest(
+  formula = Day ~ .,
+  data    = otu,
+  ntree= 500
+)
+
+m1
+pred <- m1$predicted
+pred <- as.data.frame(pred)
+colnames(pred) <- 'Predicted'
+
+#using the mean square error to determine the true value
+pred[pred$Predicted < 24.858, "True"] <- '22'
+pred[pred$Predicted < 19.858, "True"] <- '17'
+pred[pred$Predicted < 15.858, "True"] <- '13'
+pred[pred$Predicted < 11.858, "True"] <- '9'
+pred[pred$Predicted < 7.858, "True"] <- '5'
+pred[pred$Predicted < 3.858, "True"] <- '1'
+
+pred$True <- as.numeric(pred$True)
+
+ggplotRegression <- function(fit){
+  
+  ggplot(fit$model, aes_string(x = names(fit$model)[2], y = names(fit$model)[1])) + 
+    geom_abline(slope =0, intercept = 0, color='black') +
+    geom_vline(xintercept = 0, color='black') +
+    stat_smooth(method = "lm", col = "red") 
+}
+
+d <- ggplotRegression(lm(Predicted ~ True, data = pred)) +
+  geom_pointrange(aes(ymin = Predicted-2.858, ymax = Predicted+2.858), 
+                  position=position_jitter(width=0.5), alpha = 0.5) 
+
+lm_eqn <- function(df){
+  m <- lm(Predicted ~ True, df);
+  eq <- substitute(italic(Predicted) == a + b %.% italic(True)*","~~italic(r)^2~"="~r2, 
+                   list(a = format(unname(coef(m)[1]), digits = 2),
+                        b = format(unname(coef(m)[2]), digits = 2),
+                        r2 = format(summary(m)$r.squared, digits = 3)))
+  as.character(as.expression(eq));
+}
+
+d1 <- d + geom_text(x = 5, y = 23, label = lm_eqn(pred), parse = TRUE)
+d1
+
+theme_set(theme_classic(base_size = 18))
+tiff("FIG5.TIF", width = 3000, height = 3000, res=300)
+d1
+dev.off()
+
+
+## Figure 6
 # Quadratic regression of PMSI indicator taxa. 
 # A) Relative abundance of Firmicutes regressed across days. 
 # B) Relative abundance of Bacteroidetes regressed across days. 
@@ -243,7 +324,7 @@ c
 
 #make final figure
 theme_set(theme_classic(base_size = 10))
-tiff("FIG5.TIF", width = 3000, height = 1000, res=300)
+tiff("FIG6.TIF", width = 3000, height = 1000, res=300)
 ggarrange(a,b,c, 
           labels = c("A", "B", "C"),
           nrow = 1, ncol = 3)
